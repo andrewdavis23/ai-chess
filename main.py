@@ -3,6 +3,8 @@ import random
 import chess
 import os
 import json
+from google import genai
+from google.genai import types
 
 white_player = "_"*10
 black_player = "_"*10
@@ -26,7 +28,7 @@ def random_bot(board):
     return random.choice(legal_moves)
 
 # PLAYER 2: Most Valuable Piece or Random
-def piece_picker_bot(board):
+def zombie_bot(board):
     """
     Evaluates every legal move. If a move captures a piece, 
     it scores it based on standard chess values (Queen=9, Rook=5, etc.).
@@ -41,7 +43,6 @@ def piece_picker_bot(board):
     legal_moves = list(board.legal_moves)
     best_move = None
     best_score = -1
-    emojis = True
 
     for move in legal_moves:
         score = 0
@@ -65,7 +66,7 @@ def human_player(board):
     """Prompts user for a 4-character UCI move string and validates it."""
     while True:
         try:
-            user_input = input(">").strip().lower()
+            user_input = input("> ").strip().lower()
 
             move = chess.Move.from_uci(user_input)
 
@@ -79,13 +80,10 @@ def human_player(board):
 # PLAYER 4: GEMINI
 class GeminiPlayer:
     def __init__(self, api_key, model_name="gemini-2.5-flash"):
-        from google import genai
         self.model_name = model_name
         self.client = genai.Client(api_key=api_key)
 
-    def get_move(self, board):
-        from google.genai import types
-        
+    def get_move(self, board):        
         board_fen = board.fen()
         legal_moves_list = [move.uci() for move in board.legal_moves]
         player_color = "White" if board.turn == chess.WHITE else "Black"
@@ -114,13 +112,11 @@ class GeminiPlayer:
             )
             
             # Clean up any unexpected outer quotes or spaces from the JSON format
-            import json
             move_string = json.loads(response.text).strip().lower()
             return chess.Move.from_uci(move_string)
             
         except Exception as e:
-            # Fallback code...
-            pass
+            print(f"Error: {e}\nRaw Response: {response.text}")
 
 def display_menu():
     """Let's user select the player types and wait time between moves."""
@@ -134,19 +130,26 @@ def display_menu():
         f"|  5 - play game".ljust(menu_width+1) +"|",
         f"|  0 - exit".ljust(menu_width+1) +"|",
         "#" + "-"*menu_width + "#",
-        ">"
+        "Selection: "
     ]
 
     return "\n".join(menu_lines)
 
-def print_emoji_board(board):
+def print_emoji_board(board: chess.Board):
     """Renders the chess board using full-color graphic emojis and coordinates."""
     # Map python-chess internal tokens to standard graphic emojis
     emoji_map = {
-        'R': '♖', 'N': '♘', 'B': '♗', 'Q': '♕', 'K': '♔', 'P': '♙', # White
-        'r': '♜', 'n': '♞', 'b': '♝', 'q': '♛', 'k': '♚', 'p': '♟', # Black
+        'r': '♖', 'n': '♘', 'b': '♗', 'q': '♕', 'k': '♔', 'p': '♙', # White
+        'R': '♜', 'N': '♞', 'B': '♝', 'Q': '♛', 'K': '♚', 'P': '♟', # Black
         '.': '·'                                                     # Empty Square
     }
+
+    move_from = None
+    move_to = None
+
+    if board.move_stack:
+        move_from = board.peek().from_square
+        move_to = board.peek().to_square
     
     print("   a  b  c  d  e  f  g  h")
     print(" ┌────────────────────────┐")
@@ -161,7 +164,14 @@ def print_emoji_board(board):
             
             # Map token or fall back to empty square symbol
             symbol = piece.symbol() if piece else '.'
-            row_string += f" {emoji_map[symbol]} "
+            if square == move_from:
+                buffer = "[]"
+            elif square == move_to:
+                buffer = "> "
+            else:
+                buffer = "  "
+
+            row_string += f"{buffer[0]}{emoji_map[symbol]}{buffer[1]}"
             
         row_string += f"│{rank}"
         print(row_string)
@@ -171,18 +181,18 @@ def print_emoji_board(board):
 
 # Maybe could adjust this to read the api key
 def available_players():
-    return "1 - Random Bot\n2 - Material Picker Bot\n3 - me (you)\n4 - Gemini AI"
+    return "1 - Random Bot\n2 - Zombie Bot\n3 - me (you)\n4 - Gemini AI"
 
 def choose_white_player():
     global white_player, keys
     print("\n--- Select White Player ---")
     print(available_players())
-    choice = input("Select: ")
+    choice = input("Selection: ")
     if choice == "1": white_player = "Random Bot"
-    elif choice == "2": white_player = "Material Bot"
+    elif choice == "2": white_player = "Zombie Bot"
     elif choice == "3": white_player = "You"
     elif choice == "4": 
-        if not keys.get("GEMINI"):
+        if not keys.get("GEMINI_API_KEY"):
             print("Error: GEMINI not found in keys.json")
         else:
             white_player = "Gemini"
@@ -191,12 +201,12 @@ def choose_black_player():
     global black_player
     print("\n--- Select Black Player ---")
     print(available_players())
-    choice = input("Select: ")
+    choice = input("Selection: ")
     if choice == "1": black_player = "Random Bot"
-    elif choice == "2": black_player = "Material Bot"
+    elif choice == "2": black_player = "Zombie Bot"
     elif choice == "3": black_player = "You"
     elif choice == "4": 
-        if not keys.get("GEMINI"):
+        if not keys.get("GEMINI_API_KEY"):
             print("Error: GEMINI not found in keys.json")
         else:
             black_player = "Gemini"
@@ -213,6 +223,7 @@ def choose_emojis():
     emojis = not emojis
 
 def play_game():
+    global keys
     observe = True # Are we observing bots or playing against one?
     if white_player == "You" or black_player == "You":
         observe = False
@@ -231,14 +242,19 @@ def play_game():
     board = chess.Board()
     turn_count = 1
 
+    if emojis:
+        print_emoji_board(board)
+    else:
+        print(board)
+
     player_map = {
         "Random Bot": random_bot,
-        "Material Bot": piece_picker_bot,
+        "Zombie Bot": zombie_bot,
         "You": human_player,
         "Gemini": gemini_instance.get_move if gemini_instance else None
     }
 
-    print(f"♟️ Chess Simulation Initiated. White ({white_player}) vs. Black ({black_player}) ♟️\n")
+    print(f"♟️ White ({white_player}) vs. Black ({black_player}) ♟️\n")
 
     # Keep looping until the python-chess engine declares the game over
     while not board.is_game_over():
@@ -268,7 +284,7 @@ def play_game():
 
     # Determine the final result once the loop exits
     print("🏁 GAME OVER 🏁")
-    print(f"Winner: {board.outcome().winner}")
+    print(f"Winner: {"White" if board.outcome().winner else "Black"}")
     print(f"Reason: {board.outcome().termination.name}")
     print(f"Result: {board.result()}")
 
