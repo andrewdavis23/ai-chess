@@ -3,11 +3,11 @@ import random
 import chess
 import os
 import json
-from google import genai
-from google.genai import types
+from openai import OpenAI 
 
-white_player = "_"*10
-black_player = "_"*10
+PLAYER_NONE = "_"*10
+white_player = PLAYER_NONE
+black_player = PLAYER_NONE
 wait_time = 0.6
 emojis = True
 
@@ -21,13 +21,11 @@ def load_api_keys():
     
     return keys
 
-# PLAYER 1: Random Legal Move
 def random_bot(board):
     """Selects a completely random move from all legal options."""
     legal_moves = list(board.legal_moves)
     return random.choice(legal_moves)
 
-# PLAYER 2: Most Valuable Piece or Random
 def zombie_bot(board):
     """
     Evaluates every legal move. If a move captures a piece, 
@@ -61,7 +59,6 @@ def zombie_bot(board):
     # If no captures are available (score is 0), just pick a random move
     return best_move if best_score > 0 else random.choice(legal_moves)
 
-# PLAYER 3: User
 def human_player(board):
     """Prompts user for a 4-character UCI move string and validates it."""
     while True:
@@ -77,46 +74,55 @@ def human_player(board):
         except ValueError:
             print("Invalid format. Example: e2e4")
 
-# PLAYER 4: GEMINI
-class GeminiPlayer:
-    def __init__(self, api_key, model_name="gemini-2.5-flash"):
-        self.model_name = model_name
-        self.client = genai.Client(api_key=api_key)
+class LLMplayer:
+    def __init__(self, provider_name, api_key):
+        self.provider_name = provider_name
+        self.api_key = api_key
 
-    def get_move(self, board):        
+        if provider_name == "Gemini":
+            self.base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+            self.model_name = "gemini-2.5-flash"
+        elif provider_name == "Grok":
+            self.base_url = "https://api.x.ai/v1"
+            self.model_name = "grok-2-latest"
+        elif provider_name == "OpenAI":
+            self.base_url = "https://api.openai.com/v1"
+            self.model_name = "gpt-4o-mini"
+        else:
+            raise ValueError(f"Unknown provider: {provider_name}")
+        
+        self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+
+    def get_move(self, board):
+        """Prompts LLM using Forsyth–Edwards Notation (FEN). Response is in Universal Chess Notation (UCI) format."""       
         board_fen = board.fen()
         legal_moves_list = [move.uci() for move in board.legal_moves]
         player_color = "White" if board.turn == chess.WHITE else "Black"
+        move_string = "NO RESPONSE GIVEN"
 
         prompt = f"""
-        You are an expert chess engine playing as {player_color}.
-        Current board position (FEN format): {board_fen}
-        Your available legal moves are: {legal_moves_list}
-        
-        Select the single best strategic move from your legal moves list.
-
-        Your return prompt should be your chosen four-character UCI code from the list of legal moves.
-        Do not, at any point, return anything other than the UCI code.
-        """
+            You are an expert chess engine playing as {player_color}.
+            Current board position (FEN format): {board_fen}
+            Your available legal moves are: {legal_moves_list}
+            
+            Your return prompt should be your chosen four-character UCI code from the list of legal moves.
+            Do not, at any point, return anything other than the UCI code.
+            """
 
         try:
-            response = self.client.models.generate_content(
+            response = self.client.chat.completions.create(
                 model=self.model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    # Bypass complex dictionaries; pass the native string class directly
-                    response_mime_type="application/json",
-                    response_schema=str, 
-                    temperature=0.1,
-                ),
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
             )
-            
-            # Clean up any unexpected outer quotes or spaces from the JSON format
+
+            # clean response text
             move_string = json.loads(response.text).strip().lower()
             return chess.Move.from_uci(move_string)
-            
+        
         except Exception as e:
-            print(f"Error: {e}\nRaw Response: {response.text}")
+            print(f"{self.provider_name} responded with {move_string} causing error: {e}. Playing move from zombie bot.")
+            return zombie_bot(board)
 
 def display_menu():
     """Let's user select the player types and wait time between moves."""
@@ -179,37 +185,28 @@ def print_emoji_board(board: chess.Board):
     print(" └────────────────────────┘")
     print("   a  b  c  d  e  f  g  h\n")
 
-# Maybe could adjust this to read the api key
-def available_players():
-    return "1 - Random Bot\n2 - Zombie Bot\n3 - me (you)\n4 - Gemini AI"
-
-def choose_white_player():
-    global white_player, keys
-    print("\n--- Select White Player ---")
-    print(available_players())
-    choice = input("Selection: ")
-    if choice == "1": white_player = "Random Bot"
-    elif choice == "2": white_player = "Zombie Bot"
-    elif choice == "3": white_player = "You"
-    elif choice == "4": 
-        if not keys.get("GEMINI_API_KEY"):
-            print("Error: GEMINI not found in keys.json")
-        else:
-            white_player = "Gemini"
+def choose_player(color_label: str):
+    """Unified selection menu to set either the White or Black player type."""
+    global white_player, black_player, keys
     
-def choose_black_player():
-    global black_player
-    print("\n--- Select Black Player ---")
-    print(available_players())
+    print(f"\n--- Select {color_label} Player ---")
+    print("1 - Random Bot\n2 - Zombie Bot\n3 - me (you)\n4 - Gemini AI\n5 - Grok\n6 - OpenAI")
     choice = input("Selection: ")
-    if choice == "1": black_player = "Random Bot"
-    elif choice == "2": black_player = "Zombie Bot"
-    elif choice == "3": black_player = "You"
-    elif choice == "4": 
-        if not keys.get("GEMINI_API_KEY"):
-            print("Error: GEMINI not found in keys.json")
-        else:
-            black_player = "Gemini"
+    
+    # Determine which runtime variable string we are modifying
+    selection_map = {"1": "Random Bot", "2": "Zombie Bot", "3": "You", "4": "Gemini", "5": "Grok", "6": "OpenAI"}
+    player_type = selection_map.get(choice, PLAYER_NONE)
+        
+    if choice in ("4","5","6"):
+        if f"{player_type.upper()}_API_KEY" not in keys:
+            print(f"Error: {player_type.upper()}_API_KEY not found in keys.json. Selection cleared.")
+            print(keys)
+            player_type = PLAYER_NONE
+
+    if color_label.lower() == "white":
+        white_player = player_type
+    else:
+        black_player = player_type
 
 def choose_wait_time():
     global wait_time
@@ -224,18 +221,11 @@ def choose_emojis():
 
 def play_game():
     global keys
-    observe = True # Are we observing bots or playing against one?
-    if white_player == "You" or black_player == "You":
-        observe = False
-    if white_player == "none" or black_player == "none":
+
+    if white_player == PLAYER_NONE or black_player == PLAYER_NONE:
         print("\nError: Assign both players before starting.")
         return
-    if white_player == "You" and black_player == "You":
-        print("\nYou know, I was going to throw an error and say that you can't play against yourself, but whatever go ahead and try it.")
-    gemini_instance = None
-    if white_player == "Gemini" or black_player == "Gemini":
-        gemini_instance = GeminiPlayer(api_key=keys.get("GEMINI_API_KEY"))
-    
+        
     print(f"\n Match Started: \u2659 {white_player} vs {black_player} \u265F")
 
     # Initialize a fresh chess board array state
@@ -251,8 +241,15 @@ def play_game():
         "Random Bot": random_bot,
         "Zombie Bot": zombie_bot,
         "You": human_player,
-        "Gemini": gemini_instance.get_move if gemini_instance else None
     }
+
+    for player in [white_player, black_player]:
+        if player in ["Gemini", "Grok", "OpenAI"]:
+            key_name = f"{player.upper()}_API_KEY"
+            # Instantiate the class right here
+            ai_instance = LLMplayer(provider_name=player, api_key=keys.get(key_name))
+            # Map the player string directly to the function that returns a move
+            player_map[player] = ai_instance.get_move
 
     print(f"♟️ White ({white_player}) vs. Black ({black_player}) ♟️\n")
 
@@ -278,9 +275,8 @@ def play_game():
         else:
             print(board)
         
+        time.sleep(wait_time)
         turn_count += 1
-        if observe:
-            time.sleep(wait_time)
 
     # Determine the final result once the loop exits
     print("🏁 GAME OVER 🏁")
@@ -289,8 +285,8 @@ def play_game():
     print(f"Result: {board.result()}")
 
 menu_actions = {
-    1: choose_white_player,
-    2: choose_black_player,
+    1: lambda: choose_player("White"),
+    2: lambda: choose_player("Black"),
     3: choose_wait_time,
     4: choose_emojis,
     5: play_game
