@@ -28,3 +28,6 @@ This is the project.
   - I call it that because it moves around the board randomly unless it is able to capture a piece. In that case it would capture the most valuable piece.
   - I'm so bad at chess that I lost to it. In my defence, the board is not very easy to read.
 - The chess module prints out the board using "." for the empty squares and letters for the pieces. So, I wrote a function that turns the pieces into emojis.   
+
+# To-do
+- Currently white is always on bottom. If human player is black, flip the board. Built into module?
